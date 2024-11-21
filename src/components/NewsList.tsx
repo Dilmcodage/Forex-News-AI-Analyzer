@@ -9,7 +9,55 @@ export function NewsList() {
   const { settings } = useSettings();
   const [news, setNews] = useState<NewsItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshingItems, setRefreshingItems] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+
+  const analyzeArticle = async (item: Parser.Item) => {
+    const openai = new OpenAI({
+      apiKey: settings.apiKey,
+      dangerouslyAllowBrowser: true
+    });
+
+    try {
+      const response = await openai.chat.completions.create({
+        model: settings.model,
+        messages: [
+          {
+            role: 'user',
+            content: `${settings.prompt}\n\nArticle Title: ${item.title}\nContent: ${item.contentSnippet}`
+          }
+        ]
+      });
+
+      return response.choices[0]?.message?.content || '';
+    } catch (error) {
+      console.error('Error analyzing article:', error);
+      return 'Error analyzing this article';
+    }
+  };
+
+  const refreshSingleAnalysis = async (index: number, item: NewsItem) => {
+    if (!settings.apiKey) return;
+    
+    setRefreshingItems(prev => new Set(prev).add(index));
+    
+    try {
+      const newAnalysis = await analyzeArticle({
+        title: item.title,
+        contentSnippet: item.content,
+      } as Parser.Item);
+
+      setNews(prev => prev.map((newsItem, i) => 
+        i === index ? { ...newsItem, analysis: newAnalysis } : newsItem
+      ));
+    } finally {
+      setRefreshingItems(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(index);
+        return newSet;
+      });
+    }
+  };
 
   const fetchAndAnalyzeNews = async () => {
     if (!settings.apiKey) {
@@ -36,44 +84,15 @@ export function NewsList() {
       
       const feed = await parser.parseString(feedData);
       
-      const openai = new OpenAI({
-        apiKey: settings.apiKey,
-        dangerouslyAllowBrowser: true
-      });
-
       const newsItems: NewsItem[] = await Promise.all(
-        feed.items.slice(0, 5).map(async (item) => {
-          try {
-            const response = await openai.chat.completions.create({
-              model: settings.model,
-              messages: [
-                {
-                  role: 'user',
-                  content: `${settings.prompt}\n\nArticle Title: ${item.title}\nContent: ${item.contentSnippet}`
-                }
-              ]
-            });
-
-            return {
-              title: item.title || '',
-              link: item.link || '',
-              content: item.contentSnippet || '',
-              pubDate: item.pubDate || '',
-              creator: (item as any).creator || '',
-              analysis: response.choices[0]?.message?.content || ''
-            };
-          } catch (error) {
-            console.error('Error analyzing article:', error);
-            return {
-              title: item.title || '',
-              link: item.link || '',
-              content: item.contentSnippet || '',
-              pubDate: item.pubDate || '',
-              creator: (item as any).creator || '',
-              analysis: 'Error analyzing this article'
-            };
-          }
-        })
+        feed.items.slice(0, 5).map(async (item) => ({
+          title: item.title || '',
+          link: item.link || '',
+          content: item.contentSnippet || '',
+          pubDate: item.pubDate || '',
+          creator: (item as any).creator || '',
+          analysis: await analyzeArticle(item)
+        }))
       );
 
       setNews(newsItems);
@@ -108,7 +127,7 @@ export function NewsList() {
           className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-all duration-200"
         >
           <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
+          Refresh All
         </button>
       </div>
 
@@ -152,7 +171,17 @@ export function NewsList() {
                     {item.content}
                   </div>
                   <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-100">
-                    <h3 className="font-semibold text-blue-900 mb-2">AI Analysis:</h3>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-semibold text-blue-900">AI Analysis:</h3>
+                      <button
+                        onClick={() => refreshSingleAnalysis(index, item)}
+                        disabled={refreshingItems.has(index)}
+                        className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 transition-colors"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${refreshingItems.has(index) ? 'animate-spin' : ''}`} />
+                        Refresh Analysis
+                      </button>
+                    </div>
                     <p className="text-blue-800 leading-relaxed">{item.analysis}</p>
                   </div>
                 </div>
