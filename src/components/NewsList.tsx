@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import Parser from 'rss-parser';
-import OpenAI from 'openai';
 import { useSettings } from '../contexts/SettingsContext';
 import { NewsItem } from '../types';
 import { RefreshCw, AlertCircle, ExternalLink, Clock } from 'lucide-react';
+import { fetchRssFeed, analyzeArticle } from '../services/api';
 
 export function NewsList() {
   const { settings } = useSettings();
@@ -12,44 +12,25 @@ export function NewsList() {
   const [refreshingItems, setRefreshingItems] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  const analyzeArticle = async (item: Parser.Item) => {
-    const openai = new OpenAI({
-      apiKey: settings.apiKey,
-      dangerouslyAllowBrowser: true
-    });
-
-    try {
-      const response = await openai.chat.completions.create({
-        model: settings.model,
-        messages: [
-          {
-            role: 'user',
-            content: `${settings.prompt}\n\nArticle Title: ${item.title}\nContent: ${item.contentSnippet}`
-          }
-        ]
-      });
-
-      return response.choices[0]?.message?.content || '';
-    } catch (error) {
-      console.error('Error analyzing article:', error);
-      return 'Error analyzing this article';
-    }
-  };
-
   const refreshSingleAnalysis = async (index: number, item: NewsItem) => {
-    if (!settings.apiKey) return;
+    if (!settings.apiKey) {
+      setError('Please set your OpenAI API key in the settings');
+      return;
+    }
     
     setRefreshingItems(prev => new Set(prev).add(index));
     
     try {
       const newAnalysis = await analyzeArticle({
         title: item.title,
-        contentSnippet: item.content,
-      } as Parser.Item);
+        content: item.content,
+      }, settings);
 
       setNews(prev => prev.map((newsItem, i) => 
         i === index ? { ...newsItem, analysis: newAnalysis } : newsItem
       ));
+    } catch (error) {
+      setError('Failed to refresh analysis');
     } finally {
       setRefreshingItems(prev => {
         const newSet = new Set(prev);
@@ -69,9 +50,7 @@ export function NewsList() {
     setError(null);
 
     try {
-      const response = await fetch(`/api/feed?url=${encodeURIComponent(settings.feedUrl)}`);
-      if (!response.ok) throw new Error('Failed to fetch RSS feed');
-      const feedData = await response.text();
+      const feedData = await fetchRssFeed(settings.feedUrl);
       
       const parser = new Parser({
         customFields: {
@@ -85,14 +64,33 @@ export function NewsList() {
       const feed = await parser.parseString(feedData);
       
       const newsItems: NewsItem[] = await Promise.all(
-        feed.items.slice(0, 5).map(async (item) => ({
-          title: item.title || '',
-          link: item.link || '',
-          content: item.contentSnippet || '',
-          pubDate: item.pubDate || '',
-          creator: (item as any).creator || '',
-          analysis: await analyzeArticle(item)
-        }))
+        feed.items.slice(0, 5).map(async (item) => {
+          try {
+            const analysis = await analyzeArticle({
+              title: item.title || '',
+              content: item.contentSnippet || '',
+            }, settings);
+
+            return {
+              title: item.title || '',
+              link: item.link || '',
+              content: item.contentSnippet || '',
+              pubDate: item.pubDate || '',
+              creator: (item as any).creator || '',
+              analysis
+            };
+          } catch (error) {
+            console.error('Error analyzing article:', error);
+            return {
+              title: item.title || '',
+              link: item.link || '',
+              content: item.contentSnippet || '',
+              pubDate: item.pubDate || '',
+              creator: (item as any).creator || '',
+              analysis: 'Failed to analyze this article'
+            };
+          }
+        })
       );
 
       setNews(newsItems);
