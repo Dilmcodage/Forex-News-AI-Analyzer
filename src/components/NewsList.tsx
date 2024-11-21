@@ -3,7 +3,7 @@ import Parser from 'rss-parser';
 import OpenAI from 'openai';
 import { useSettings } from '../contexts/SettingsContext';
 import { NewsItem } from '../types';
-import { RefreshCw, AlertCircle } from 'lucide-react';
+import { RefreshCw, AlertCircle, ExternalLink, Clock } from 'lucide-react';
 
 export function NewsList() {
   const { settings } = useSettings();
@@ -21,8 +21,20 @@ export function NewsList() {
     setError(null);
 
     try {
-      const parser = new Parser();
-      const feed = await parser.parseURL(settings.feedUrl);
+      const response = await fetch(`/api/feed?url=${encodeURIComponent(settings.feedUrl)}`);
+      if (!response.ok) throw new Error('Failed to fetch RSS feed');
+      const feedData = await response.text();
+      
+      const parser = new Parser({
+        customFields: {
+          item: [
+            ['dc:creator', 'creator'],
+            ['content:encoded', 'contentEncoded'],
+          ],
+        },
+      });
+      
+      const feed = await parser.parseString(feedData);
       
       const openai = new OpenAI({
         apiKey: settings.apiKey,
@@ -37,7 +49,7 @@ export function NewsList() {
               messages: [
                 {
                   role: 'user',
-                  content: `${settings.prompt}\n\nArticle: ${item.title}\n${item.contentSnippet}`
+                  content: `${settings.prompt}\n\nArticle Title: ${item.title}\nContent: ${item.contentSnippet}`
                 }
               ]
             });
@@ -47,6 +59,7 @@ export function NewsList() {
               link: item.link || '',
               content: item.contentSnippet || '',
               pubDate: item.pubDate || '',
+              creator: (item as any).creator || '',
               analysis: response.choices[0]?.message?.content || ''
             };
           } catch (error) {
@@ -56,6 +69,7 @@ export function NewsList() {
               link: item.link || '',
               content: item.contentSnippet || '',
               pubDate: item.pubDate || '',
+              creator: (item as any).creator || '',
               analysis: 'Error analyzing this article'
             };
           }
@@ -91,7 +105,7 @@ export function NewsList() {
         <button
           onClick={fetchAndAnalyzeNews}
           disabled={loading}
-          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-all duration-200"
         >
           <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
           Refresh
@@ -105,25 +119,42 @@ export function NewsList() {
       ) : (
         <div className="space-y-6">
           {news.map((item, index) => (
-            <div key={index} className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="text-xl font-semibold mb-2">
-                <a
-                  href={item.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-800"
-                >
-                  {item.title}
-                </a>
-              </h2>
-              <p className="text-sm text-gray-500 mb-4">
-                {new Date(item.pubDate).toLocaleString()}
-              </p>
-              <div className="prose max-w-none">
-                <div className="mb-4 text-gray-700">{item.content}</div>
-                <div className="mt-4 p-4 bg-blue-50 rounded-lg">
-                  <h3 className="font-semibold text-blue-900 mb-2">AI Analysis:</h3>
-                  <p className="text-blue-800">{item.analysis}</p>
+            <div key={index} className="bg-white rounded-lg shadow-lg overflow-hidden border border-gray-100 hover:shadow-xl transition-shadow duration-200">
+              <div className="p-6">
+                <div className="flex items-start justify-between mb-4">
+                  <h2 className="text-xl font-semibold text-gray-900 flex-grow">
+                    <a
+                      href={item.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hover:text-blue-600 transition-colors duration-200 flex items-center gap-2"
+                    >
+                      {item.title}
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  </h2>
+                </div>
+                
+                <div className="flex items-center gap-4 text-sm text-gray-500 mb-4">
+                  <div className="flex items-center gap-1">
+                    <Clock className="w-4 h-4" />
+                    {new Date(item.pubDate).toLocaleString()}
+                  </div>
+                  {item.creator && (
+                    <div className="flex items-center gap-1">
+                      By {item.creator}
+                    </div>
+                  )}
+                </div>
+
+                <div className="prose max-w-none">
+                  <div className="mb-4 text-gray-700 leading-relaxed">
+                    {item.content}
+                  </div>
+                  <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-100">
+                    <h3 className="font-semibold text-blue-900 mb-2">AI Analysis:</h3>
+                    <p className="text-blue-800 leading-relaxed">{item.analysis}</p>
+                  </div>
                 </div>
               </div>
             </div>
